@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>百家樂快速計算</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Noto Sans TC",Arial,sans-serif;color:#171717;background:#f5f5f7}
+*{box-sizing:border-box}body{margin:0;padding:18px 14px 30px}
+.app{max-width:560px;margin:auto}
+.card{background:#fff;border-radius:18px;padding:16px;margin-bottom:12px;box-shadow:0 2px 12px rgba(0,0,0,.06)}
+h1{font-size:22px;margin:0 0 4px}.muted{color:#777;font-size:13px}
+.row{display:flex;gap:10px;align-items:center}.between{justify-content:space-between}
+label{display:block;font-size:14px;font-weight:700;margin-bottom:7px}
+input{width:100%;height:52px;border:1px solid #ddd;border-radius:12px;padding:0 14px;font-size:20px;outline:none;background:#fafafa}
+input:focus{border-color:#111;background:#fff}
+button{height:50px;border:0;border-radius:12px;padding:0 18px;font-size:16px;font-weight:700;background:#111;color:white;white-space:nowrap}
+button.secondary{background:#eee;color:#111}.danger{background:#fee!important;color:#a00!important}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}.stat{background:#f7f7f8;border-radius:12px;padding:12px}
+.stat .v{font-size:21px;font-weight:800;margin-top:3px}
+.best{font-size:32px;font-weight:900}.ev{font-size:24px;font-weight:800}
+.evgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:14px}
+.evbox{background:#f7f7f8;border-radius:10px;padding:10px 4px;text-align:center}.evbox .name{font-size:13px;color:#666}.evbox .num{font-size:15px;font-weight:800;margin-top:4px}
+.positive{color:#087f23}.negative{color:#a00}
+.note{font-size:12px;color:#777;line-height:1.5}
+.hidden{display:none}
+@media(max-width:390px){.evgrid{gap:4px}.evbox{padding:8px 2px}.evbox .num{font-size:13px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="card">
+    <div class="row between">
+      <div><h1>百家樂｜快速計算</h1><div class="muted">一局一輸入，最多累積 60 局</div></div>
+      <div class="muted">第 <b id="round">0</b>/60</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <label for="cards">本局牌面</label>
+    <div class="row">
+      <input id="cards" placeholder="例如 K7/54" autocomplete="off" autocapitalize="characters" enterkeyhint="done">
+      <button id="record">記錄本局</button>
+    </div>
+    <div id="msg" class="note" style="margin-top:8px">格式：莊/閒，例如 K7/54；T/J/Q/K 都代表 10。</div>
+  </div>
+
+  <div class="card">
+    <div class="row between">
+      <div><div class="muted">下一局最佳</div><div id="best" class="best">不下注</div></div>
+      <div style="text-align:right"><div class="muted">EV</div><div id="bestEv" class="ev">—</div></div>
+    </div>
+    <div id="evgrid" class="evgrid"></div>
+  </div>
+
+  <div class="card">
+    <div class="stats">
+      <div class="stat"><div class="muted">剩餘牌</div><div id="remaining" class="v">416</div></div>
+      <div class="stat"><div class="muted">狀態</div><div id="status" class="v">新靴</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <label for="reset">保險清零</label>
+    <div class="row">
+      <input id="reset" placeholder="輸入「清零」" autocomplete="off">
+      <button id="resetBtn" class="danger">清零</button>
+    </div>
+    <div class="note" style="margin-top:8px">換靴、洗牌或發牌中斷時使用。清零後所有累積牌況會重新開始。</div>
+  </div>
+
+  <div class="card">
+    <div class="note">本工具依輸入的已出牌計算牌靴剩餘組成，並以百家樂補牌規則估算下一局結果。EV 為數學期望值，不代表保證獲利。</div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const KEY='baccarat_fast_v2';
+  const labels=['莊','閒','和','莊對','閒對'];
+  const initial={A:32,'2':32,'3':32,'4':32,'5':32,'6':32,'7':32,'8':32,'9':32,T:32,J:32,Q:32,K:32};
+  const value={A:1,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,T:0,J:0,Q:0,K:0};
+
+  const $=id=>document.getElementById(id);
+  let state=load();
+
+  function load(){
+    try{
+      const x=JSON.parse(localStorage.getItem(KEY)||'null');
+      return x && Array.isArray(x.history) ? x : {history:[]};
+    }catch{return {history:[]}}
+  }
+  function save(){localStorage.setItem(KEY,JSON.stringify(state))}
+  function clean(s){return s.trim().toUpperCase().replace(/\s+/g,'')}
+  function valid(s){return /^[A23456789TJQK]+\/[A23456789TJQK]+$/.test(s)}
+
+  function counts(){
+    const c={}; Object.keys(initial).forEach(k=>c[k]=0);
+    for(const hand of state.history){
+      for(const ch of hand.replace('/','')){
+        if(c[ch]!==undefined)c[ch]++;
+      }
+    }
+    return c;
+  }
+
+  function remaining(){
+    const c=counts(), r={};
+    for(const k in initial)r[k]=Math.max(0,initial[k]-c[k]);
+    return r;
+  }
+
+  function handValue(cards){
+    let s=0;
+    for(const x of cards)s+=value[x];
+    return s%10;
+  }
+
+  function draw(c,callback){
+    const total=Object.values(c).reduce((a,b)=>a+b,0);
+    if(total<=0)return;
+    for(const rank of Object.keys(c)){
+      if(c[rank]<=0)continue;
+      const next={...c};
+      next[rank]--;
+      callback(rank,next,c[rank]/total);
+    }
+  }
+
+  function calc(){
+    const r=remaining();
+    const total=Object.values(r).reduce((a,b)=>a+b,0);
+
+    if(total<6){
+      return {total,ev:[0,0,0,0,0]};
+    }
+
+    // 用完整枚舉計算下一局的結果分布。
+    // state: 前四張依序 P,B,P,B。
+    const out={banker:0,player:0,tie:0,bankerPair:0,playerPair:0};
+
+    function finish(p,b,prob,pairP,pairB){
+      const pv=handValue(p), bv=handValue(b);
+
+      if(bv>pv)out.banker+=prob;
+      else if(pv>bv)out.player+=prob;
+      else out.tie+=prob;
+
+      if(pairB)out.bankerPair+=prob;
+      if(pairP)out.playerPair+=prob;
+    }
+
+    function bankerAfterPlayerThird(c,p,b,prob,pairP,pairB){
+      const bv=handValue(b);
+      const third=value[p[2]];
+      let drawBanker=false;
+
+      if(bv<=2)drawBanker=true;
+      else if(bv===3 && third!==8)drawBanker=true;
+      else if(bv===4 && third>=2 && third<=7)drawBanker=true;
+      else if(bv===5 && third>=4 && third<=7)drawBanker=true;
+      else if(bv===6 && third>=6 && third<=7)drawBanker=true;
+
+      if(drawBanker){
+        draw(c,(x,next,p2)=>{
+          finish(p,[...b,x],prob*p2,pairP,pairB);
+        });
+      }else{
+        finish(p,b,prob,pairP,pairB);
+      }
+    }
+
+    function afterFour(c,p,b,prob){
+      const pv=handValue(p), bv=handValue(b);
+      const pairP=p[0]===p[1];
+      const pairB=b[0]===b[1];
+
+      // Natural：前四張合計點數為 8 或 9，直接結束。
+      if(pv>=8 || bv>=8){
+        finish(p,b,prob,pairP,pairB);
+        return;
+      }
+
+      // 閒 0~5 補一張。
+      if(pv<=5){
+        draw(c,(x,next,p2)=>{
+          bankerAfterPlayerThird(next,[...p,x],b,prob*p2,pairP,pairB);
+        });
+        return;
+      }
+
+      // 閒 6~7 停牌，莊依點數決定。
+      if(bv<=5){
+        draw(c,(x,next,p2)=>{
+          finish(p,[...b,x],prob*p2,pairP,pairB);
+        });
+      }else{
+        finish(p,b,prob,pairP,pairB);
+      }
+    }
+
+    function deal(c,p,b,stage,prob){
+      if(stage===4){
+        afterFour(c,p,b,prob);
+        return;
+      }
+
+      draw(c,(x,next,p2)=>{
+        if(stage===0 || stage===2){
+          deal(next,[...p,x],b,stage+1,prob*p2);
+        }else{
+          deal(next,p,[...b,x],stage+1,prob*p2);
+        }
+      });
+    }
+
+    deal(r,[],[],0,1);
+
+    // 下注 EV：
+    // 莊：贏賠 0.95:1；莊輸為 -1；和視為退回本金
+    // 閒：贏賠 1:1；閒輸為 -1；和視為退回本金
+    // 和：8:1
+    // 對子：11:1
+    const bankerEV=out.banker*0.95-out.player;
+    const playerEV=out.player-out.banker;
+    const tieEV=out.tie*8-(1-out.tie);
+    const bankerPairEV=out.bankerPair*11-(1-out.bankerPair);
+    const playerPairEV=out.playerPair*11-(1-out.playerPair);
+
+    return {
+      total,
+      ev:[bankerEV,playerEV,tieEV,bankerPairEV,playerPairEV]
+    };
+  }
+
+  function render(){
+    $('round').textContent=state.history.length;
+
+    const c=calc();
+    $('remaining').textContent=c.total;
+    $('status').textContent=
+      state.history.length===0?'新靴':
+      state.history.length>=60?'已滿60局':'累積中';
+
+    const grid=$('evgrid');
+    grid.innerHTML='';
+
+    c.ev.forEach((v,i)=>{
+      const d=document.createElement('div');
+      d.className='evbox';
+      d.innerHTML=
+        `<div class="name">${labels[i]}</div>`+
+        `<div class="num ${v>0?'positive':v<0?'negative':''}">${(v*100).toFixed(2)}%</div>`;
+      grid.appendChild(d);
+    });
+
+    const m=Math.max(...c.ev);
+    const idx=c.ev.indexOf(m);
+
+    if(m>0){
+      $('best').textContent=labels[idx];
+      $('bestEv').textContent='+'+(m*100).toFixed(2)+'%';
+      $('bestEv').className='ev positive';
+    }else{
+      $('best').textContent='不下注';
+      $('bestEv').textContent=(m*100).toFixed(2)+'%';
+      $('bestEv').className='ev negative';
+    }
+  }
+
+  function record(){
+    const v=clean($('cards').value);
+
+    if(!valid(v)){
+      $('msg').textContent='格式錯誤：請輸入例如 K7/54。';
+      return;
+    }
+
+    if(state.history.length>=60){
+      state.history=[];
+    }
+
+    state.history.push(v);
+
+    if(state.history.length>=60){
+      $('msg').textContent='已完成 60 局，系統已自動重置新靴。';
+      state.history=[];
+    }else{
+      $('msg').textContent='已記錄本局，下一局會以累積牌況重新計算。';
+    }
+
+    save();
+    $('cards').value='';
+    render();
+    $('cards').focus();
+  }
+
+  function reset(){
+    if(clean($('reset').value)!=='清零'){
+      $('msg').textContent='若要重置，請輸入「清零」。';
+      return;
+    }
+
+    state={history:[]};
+    save();
+    $('reset').value='';
+    $('cards').value='';
+    $('msg').textContent='已清零，重新開始新靴。';
+    render();
+    $('cards').focus();
+  }
+
+  $('record').addEventListener('click',record);
+  $('cards').addEventListener('keydown',e=>{
+    if(e.key==='Enter'){
+      e.preventDefault();
+      record();
+    }
+  });
+
+  $('resetBtn').addEventListener('click',reset);
+  $('reset').addEventListener('keydown',e=>{
+    if(e.key==='Enter'){
+      e.preventDefault();
+      reset();
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
